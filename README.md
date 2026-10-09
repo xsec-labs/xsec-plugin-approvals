@@ -13,7 +13,8 @@ Source repository: <https://github.com/xsec-labs/xsec-plugin-approvals>
 
 ## Source validation
 
-Run `npm ci && npm run validate` before opening a pull request. The check validates
+Run `npm ci && npm run check` before opening a pull request. `check` type-checks
+the TypeScript sources, builds the production frontend and performs source validation. The check validates
 the full XSEC Desktop extension against the pinned Desktop schema snapshot, its
 Frontend API and permission contract, all plugin-tree paths and entrypoints, and
 the marketplace descriptor. It also syntax-checks the production frontend.
@@ -21,6 +22,24 @@ the marketplace descriptor. It also syntax-checks the production frontend.
 The schema snapshot is sourced from `desktop/packages/plugin-api/schemas/` in
 the matching XSEC Desktop source revision. Update it together with the semantic
 checks whenever Desktop changes the plugin contract.
+
+## Shared UI
+
+The workspace list, filters, detail drawer and settings page use
+`@xsec/ui-react` 0.1.7 and `@xsec/design-tokens` 0.1.2. Host color mode, density,
+font size and reduced-motion preferences apply to controls and portals. The
+page keeps the 40-record cursor, revision-pinned detail chunks, session binding
+and full-access acknowledgement contract. Settings save through an explicit
+broker action, with Enter support in input fields.
+
+React and React DOM 18.3.1, Lucide 0.468.0, TypeScript 5.9.3 and esbuild 0.25.12
+are pinned in the lockfile. The shared UI archives are checked into `vendor/xsec-ui/`.
+`npm run build` creates the single ESM entrypoint and
+`com.xsec.desktop/THIRD_PARTY_NOTICES.txt`; `scripts/activate-source.js` preserves
+the directly declared Host request methods in the generated module.
+
+For isolated worktrees, reuse installed dependencies and package caches. Local
+resource checks run through the workspace build-resource controller.
 
 ## Release provenance
 

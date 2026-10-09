@@ -1,119 +1,55 @@
-// Run inside a real Desktop Debug WebView with the disposable SQLite fixture.
+// Execute in an isolated Desktop Debug WebView with approval-host-fixture.py data.
 function assert(value, message) { if (!value) throw new Error(message); }
-const PAGE_SIZE = 40;
-const TEST_TIMEOUT_MS = 10_000;
-
-class LiveHostCheck {
-  constructor(options) { this.options = options; this.bound = { sessionId: options.sessionId }; this.requests = []; }
-  context() { return { kind: "workspace-tool", workspace: { binding: { sessionId: this.bound.sessionId } } }; }
-  async setup() {
-    const invoke = window.__TAURI__.core.invoke;
-    this.plugin = (await invoke("plugin_installed_manifests")).find((entry) => entry.plugin_id === "com.xsec.workspace.approvals");
-    assert(this.plugin?.trust === "official-development", "Attach the Approvals development workspace first");
-    this.bound.sha = this.plugin.sha256;
-    const loaded = await invoke("plugin_frontend_load", { pluginId: this.plugin.plugin_id, expectedSha256: this.bound.sha });
-    const url = URL.createObjectURL(new Blob([loaded.source], { type: "text/javascript" }));
-    try { this.module = await import(url); } finally { URL.revokeObjectURL(url); }
-    this.root = document.createElement("div"); this.root.id = "approval-host-regression"; document.body.append(this.root);
-    const media = window.matchMedia("(prefers-color-scheme: dark)");
-    this.host = { context: this.context(), request: (method, params) => this.request(method, params), onTheme(listener) {
-      const receive = () => listener({ "color-mode": media.matches ? "dark" : "light" });
-      media.addEventListener("change", receive); return { dispose() { media.removeEventListener("change", receive); } };
-    } };
-    this.page = this.module.activate(this.host); await this.page.mount(this.root, this.context());
-    assert(this.page.state.stats?.approval_request_count === this.options.expectedCount, "Host is not using the fixture database");
-  }
-  request(method, params) {
-    this.requests.push({ method, params });
-    return window.__TAURI__.core.invoke("plugin_frontend_rpc", { pluginId: this.plugin.plugin_id, expectedSha256: this.bound.sha, sessionId: method.startsWith("xsec.approvals.settings.") ? undefined : this.bound.sessionId, method, params });
-  }
-  settled(predicate) {
-    return new Promise((resolve, reject) => {
-      const observer = new MutationObserver(() => { if (predicate()) { observer.disconnect(); clearTimeout(timer); resolve(); } });
-      const timer = setTimeout(() => { observer.disconnect(); reject(new Error("UI state did not settle")); }, TEST_TIMEOUT_MS);
-      observer.observe(this.root, { childList: true, subtree: true, attributes: true, characterData: true });
-      if (predicate()) { observer.disconnect(); clearTimeout(timer); resolve(); }
-    });
-  }
-  async pagination() {
-    const { page, options } = this; const ids = []; const counts = [];
-    while (true) {
-      counts.push(page.state.rows.length); ids.push(...page.state.rows.map((row) => row.id));
-      if (!page.state.nextCursor) break;
-      page.controls.next.click(); await this.settled(() => !page.state.refreshInFlight);
-    }
-    assert(JSON.stringify(counts) === JSON.stringify([PAGE_SIZE, PAGE_SIZE, options.expectedCount - PAGE_SIZE * 2]), "Unexpected page sizes");
-    assert(ids.length === options.expectedCount && new Set(ids).size === ids.length, "Pagination duplicated or lost equal-timestamp records");
-    assert(page.controls.next.disabled, "Last-page navigation must be disabled");
-    page.controls.previous.click(); await this.settled(() => !page.state.refreshInFlight);
-    assert(page.state.pageIndex === 1 && page.state.rows[0].id === ids[PAGE_SIZE], "Previous page lost its cursor");
-    page.controls.refresh.click(); await this.settled(() => !page.state.refreshInFlight);
-    assert(page.state.pageIndex === 0 && page.controls.previous.disabled, "Manual refresh must reset pagination");
-    return counts;
-  }
-  async details() {
-    const { page, options } = this; const row = page.state.rows.find((value) => value.request_id === options.longRequestId);
-    assert(row, "Long-detail fixture must sort into page one");
-    await page.openDetail(row);
-    assert(page.controls.drawer.textContent.includes(options.expectedArgumentSuffix), "UTF-8 detail was truncated");
-    const detailRequests = this.requests.filter((entry) => entry.method === "xsec.approvals.detail");
-    assert(detailRequests.length > 1 && detailRequests[1].params.revision, "Detail must use revision-pinned chunks");
-    page.closeDetail();
-    const refresh = page.refresh({ silent: true }); const detail = page.openDetail(row); await Promise.all([refresh, detail]);
-    assert(!page.controls.drawer.hidden, "An in-flight automatic refresh closed the detail");
-    page.closeDetail(); const pending = page.openDetail(row); page.closeDetail(); await pending;
-    assert(page.controls.drawer.hidden, "Closed detail reappeared after its response");
-    return detailRequests.length;
-  }
-  async filters() {
-    const { page } = this; const select = this.root.querySelector("select"); select.value = "denied"; select.dispatchEvent(new Event("change"));
-    await this.settled(() => !page.state.refreshInFlight);
-    assert(page.state.pageIndex === 0 && page.state.rows.every((row) => row.decision === "denied"), "Decision filter failed");
-    const input = this.root.querySelector("input[type=search]"); input.value = this.options.toolName; input.dispatchEvent(new Event("input"));
-    await this.settled(() => Boolean(page.state.rows) && !page.state.refreshInFlight);
-    assert(page.state.rows.length === 1 && page.state.rows[0].tool_name === this.options.toolName, "Tool filter failed");
-    select.value = ""; select.dispatchEvent(new Event("change")); input.value = ""; input.dispatchEvent(new Event("input"));
-    await this.settled(() => page.state.rows?.length === PAGE_SIZE && !page.state.refreshInFlight);
-    this.root.querySelector('[data-value="24h"]').click(); await this.settled(() => !page.state.refreshInFlight);
-    const since = page.state.sinceMs; page.controls.next.click(); await this.settled(() => !page.state.refreshInFlight);
-    assert(page.state.sinceMs === since, "Time window moved during pagination");
-    this.root.querySelector('[data-value="all"]').click(); await this.settled(() => !page.state.refreshInFlight);
-  }
-  async sessions() {
-    const { page } = this; const pending = page.refresh(); const detail = page.openDetail(page.state.rows[0]);
-    this.bound.sessionId = this.options.otherSessionId;
-    await Promise.all([pending, detail, page.update(this.context())]);
-    assert(page.state.rows.length === 1 && page.state.rows[0].session_id === this.bound.sessionId, "Old session response leaked into new session");
-    assert(page.controls.drawer.hidden, "Session change left the old detail open");
-    this.bound.sessionId = undefined; await page.update(this.context());
-    assert(!page.state.rows && !page.controls.refresh.disabled && page.controls.status.textContent.includes("进入会话"), "Unbound session remained busy");
-    this.bound.sessionId = this.options.sessionId; await page.update(this.context());
-    const foreign = this.request("xsec.approvals.detail", { requestId: this.options.foreignRequestId, offset: 0 });
-    await foreign.then(() => { throw new Error("Cross-session detail was accepted"); }, (error) => assert(String(error).length > 0, "Missing host error"));
-  }
-  async failures() {
-    const { page } = this; this.bound.sha = "0".repeat(this.plugin.sha256.length); await page.refresh();
-    assert(!page.state.rows && !page.state.stats && !page.state.autoRefresh && page.controls.status.dataset.tone === "error", "Host failure must clear data and pause refresh");
-    this.bound.sha = this.plugin.sha256; page.controls.refresh.click(); await this.settled(() => !page.state.refreshInFlight);
-    assert(page.state.rows.length === PAGE_SIZE && page.controls.status.textContent === "", "Explicit refresh did not recover");
-    const pending = page.openDetail(page.state.rows[0]); page.dispose(); await pending;
-    assert(page.controls.drawer.hidden, "Disposed detail reappeared");
-    await page.mount(this.root, this.context()); assert(page.state.rows.length === PAGE_SIZE, "Remount failed");
-  }
-  async settings() {
-    this.page.dispose(); const host = { ...this.host, context: { kind: "settings-page" } }; this.page = this.module.activate(host);
-    this.page.mount(this.root, host.context); await this.settled(() => this.page.settingsReady);
-    assert(!this.page.controls.save.disabled, "Settings read failed after lifecycle extraction");
-    await this.page.save(); assert(this.page.controls.notice.textContent.startsWith("已保存"), "Settings save failed");
-  }
-  dispose() { this.page?.dispose(); this.root?.remove(); }
-}
-
 export async function verifyLiveHost(options) {
-  const check = new LiveHostCheck(options);
+  const nativeClientId = window.__XSEC_NATIVE_CLIENT_ID__;
+  assert(typeof nativeClientId === 'string' && nativeClientId.length > 0, 'Native client admission is unavailable');
+  const invoke = (command, args = {}) => window.__TAURI__.core.invoke(command, args, {headers:{'x-xsec-client-id':nativeClientId,'x-xsec-request-id':crypto.randomUUID()}});
+  const plugin = (await invoke('plugin_installed_manifests')).find(entry => entry.plugin_id === 'com.xsec.workspace.approvals');
+  assert(plugin?.trust === 'official-development', 'Attach the Approvals development workspace first');
+  const loaded = await invoke('plugin_frontend_load', {pluginId:plugin.plugin_id,expectedSha256:plugin.sha256});
+  const url = URL.createObjectURL(new Blob([loaded.source],{type:'text/javascript'}));
+  let module;
+  try {module=await import(url);} finally {URL.revokeObjectURL(url);}
+  const root=document.createElement('div');root.id='approval-host-regression';document.body.append(root);
+  const theme={'color-mode':'light','ui-density':'comfortable','reduce-motion':'true','ui-font-size':'14px'};
+  const previousStyles=Object.keys(theme).map(key=>[key,document.documentElement.style.getPropertyValue('--xsec-'+key)]);
+  for(const [key,value] of Object.entries(theme))document.documentElement.style.setProperty('--xsec-'+key,value);
+  let page,sessionId=options.sessionId,sha=plugin.sha256;
+  const requests=[],checks=[];let stage='mount';
+  const context=()=>({kind:'workspace-tool',workspace:{binding:{sessionId}}});
+  const request=async(method,params)=>{
+    requests.push({method,params});
+    return await invoke("plugin_frontend_rpc",{pluginId:plugin.plugin_id,expectedSha256:sha,sessionId:method.startsWith('xsec.approvals.settings.')?undefined:sessionId,method,params});
+  };
+  const host={context:context(),request,onTheme(callback){const receive=()=>callback(Object.fromEntries(Object.keys(theme).map(key=>[key,getComputedStyle(document.documentElement).getPropertyValue('--xsec-'+key).trim()])));const observer=new MutationObserver(receive);observer.observe(document.documentElement,{attributes:true,attributeFilter:['style']});receive();return{dispose(){observer.disconnect();}};}};
+  const wait=predicate=>new Promise((resolve,reject)=>{
+    const observer=new MutationObserver(()=>{if(predicate()){observer.disconnect();clearTimeout(timer);resolve();}});
+    const timer=setTimeout(()=>{observer.disconnect();reject(new Error('Rendered approval state did not settle at '+stage));},10_000);
+    observer.observe(document.body,{subtree:true,childList:true,attributes:true,characterData:true});
+    if(predicate()){observer.disconnect();clearTimeout(timer);resolve();}
+  });
+  const rows=()=>[...root.querySelectorAll('.approval-row')];
+  const ready=(count,pageNumber)=>wait(()=>rows().length===count&&root.querySelector('.approval-list')?.getAttribute('aria-busy')==='false'&&(!pageNumber||root.querySelector('.approval-pagination span')?.textContent.startsWith('第 '+pageNumber+' 页')));
+  const button=name=>{const result=[...root.querySelectorAll('button')].find(entry=>entry.textContent===name||entry.getAttribute('aria-label')===name);assert(result,'Missing '+name);return result;};
+  const click=async name=>{const before=requests.length;button(name).click();await wait(()=>requests.length>before);};
+  const close=async()=>{const value=document.querySelector('.approval-detail-drawer button[aria-label="关闭"]');assert(value,'Detail close action missing');value.click();await wait(()=>{const drawer=document.querySelector('.approval-detail-drawer');return !drawer||(!drawer.hasAttribute('data-open')&&drawer.hasAttribute('data-ending-style')&&!drawer.querySelector('.approval-details'));});};
+  const input=(label,value)=>{const labelElement=[...root.querySelectorAll('label')].find(entry=>entry.textContent===label);assert(labelElement,'Missing field '+label);const field=document.getElementById(labelElement.htmlFor);assert(field instanceof HTMLInputElement,'Input field missing');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(field,value);field.dispatchEvent(new Event('input',{bubbles:true}));};
   try {
-    await check.setup(); const pages = await check.pagination(); const detailChunks = await check.details();
-    await check.filters(); await check.sessions(); await check.failures(); await check.settings();
-    return { passed: true, version: check.plugin.version, sha256: check.plugin.sha256, pages, detailChunks, checks: ["filters", "sessions", "cross-session rejection", "error recovery", "remount", "settings read/save"] };
-  } finally { check.dispose(); }
+    window.approvalHostFailure=undefined;
+    page=module.activate(host);await page.mount(root,context());await ready(40);
+    assert(root.querySelector('.approval-stat strong')?.textContent===String(options.expectedCount),'Host fixture statistics mismatch');
+    stage='pagination';const tools=[],pages=[];
+    for(const [index,count] of [40,40,5].entries()){stage='page-'+(index+1);await ready(count,index+1);pages.push(count);tools.push(...rows().map(row=>row.querySelector('strong').textContent));if(count===40)await click('下一页');}
+    assert(new Set(tools).size===85&&tools.length===85,'Equal-timestamp pagination lost or duplicated records');assert(button('下一页').disabled,'Last page remains enabled');await click('上一页');await ready(40,2);assert(rows()[0].querySelector('strong').textContent===tools[40],'Previous cursor changed');await click('刷新');await ready(40,1);checks.push('pagination');
+    stage='detail';rows()[0].click();await wait(()=>document.querySelector('.approval-details')?.textContent.includes(options.expectedArgumentSuffix));
+    const chunks=requests.filter(row=>row.method==='xsec.approvals.detail');assert(chunks.length>1&&chunks[1].params.revision,'Detail chunks are not revision pinned');stage='detail-close';await close();checks.push('utf8-detail-chunks');
+    stage='filters';input('工具名','  '+options.toolName+'  ');await ready(1);assert(rows()[0].querySelector('strong').textContent===options.toolName,'Tool filter mismatch');input('工具名','');await ready(40);await click('24 小时');await ready(40,1);await click('下一页');await ready(40,2);
+    const filtered=requests.filter(row=>row.method==='xsec.approvals.list'&&row.params.sinceMs);assert(filtered.at(-1).params.sinceMs===filtered.at(-2).params.sinceMs,'Time window moved across pages');await click('全部');await ready(40,1);checks.push('tool-and-time-filters');
+    stage='sessions';sessionId=options.otherSessionId;await page.update(context());await ready(1);assert(rows()[0].querySelector('strong').textContent==='other-tool','Session update showed old records');sessionId=undefined;await page.update(context());await wait(()=>root.textContent.includes('进入会话后查看审批记录'));assert(rows().length===0,'Unbound records remained');sessionId=options.sessionId;await page.update(context());await ready(40);
+    let refused=false;try{await request('xsec.approvals.detail',{requestId:options.foreignRequestId,offset:0});}catch(error){refused=String(error).length>0;}assert(refused,'Cross-session detail was accepted');checks.push('session-binding-rejection');
+    stage='failure';sha='0'.repeat(sha.length);await click('刷新');await wait(()=>root.textContent.includes('审批记录读取失败'));assert(rows().length===0&&!root.querySelector('.approval-stat'),'Failure left stale records');sha=plugin.sha256;await click('刷新');await ready(40,1);checks.push('explicit-error-recovery');
+    stage='remount';page.dispose();await page.mount(root,context());await ready(40);checks.push('dispose-remount');
+    stage='settings';page.dispose();const settingsContext={kind:'settings-page',settings:{id:'approvals',page:'approvals'}};page=module.activate({...host,context:settingsContext});await page.mount(root,settingsContext);await wait(()=>root.querySelector('button[data-action=save-settings]')?.disabled===false);await click('保存设置');await wait(()=>root.querySelector('[role=status]')?.textContent.startsWith('已保存'));checks.push('settings-read-write');
+    return{passed:true,version:plugin.version,sha256:plugin.sha256,pages,detailChunks:chunks.length,checks,scope:'native WKWebView DOM and real Tauri broker; closed-state semantics while hidden'};
+  } catch(error) {window.approvalHostFailure={stage,rows:rows().length,dialogCount:document.querySelectorAll('[role=dialog]').length,drawer:document.querySelector('.approval-detail-drawer')&&{attributes:document.querySelector('.approval-detail-drawer').getAttributeNames().map(name=>[name,document.querySelector('.approval-detail-drawer').getAttribute(name)]),detailPresent:!!document.querySelector('.approval-detail-drawer .approval-details')},details:!!document.querySelector('.approval-details'),detailLoading:document.body.textContent.includes('正在加载审批详情'),detailError:document.body.textContent.includes('审批详情读取失败'),requestCounts:Object.fromEntries([...new Set(requests.map(r=>r.method))].map(method=>[method,requests.filter(r=>r.method===method).length])),error:String(error)};throw error;} finally {page?.dispose();root.remove();for(const [key,value] of previousStyles){if(value)document.documentElement.style.setProperty('--xsec-'+key,value);else document.documentElement.style.removeProperty('--xsec-'+key);}}
 }

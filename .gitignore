@@ -1,1 +1,3 @@
 node_modules/
+.xsec-build/
+__pycache__/
