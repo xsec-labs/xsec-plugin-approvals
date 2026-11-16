@@ -58,7 +58,7 @@ const DETAIL_GROUPS = [["请求", ["请求 ID", "工具", "审批时间", "审�
 const BASE_CSS = `
 :root{--d-canvas:#f7f7f8;--d-surface:#fff;--d-subtle:#f0f0f2;--d-hover:#eaeaed;--d-text:#18181b;--d-muted:#62626b;--d-border:#dcdce1;--d-danger:#b42318;--d-success:#187344;--d-warning:#8a5700}
 @media (prefers-color-scheme:dark){:root{--d-canvas:#111113;--d-surface:#19191c;--d-subtle:#232327;--d-hover:#2d2d33;--d-text:#f4f4f5;--d-muted:#a1a1aa;--d-border:#35353c;--d-danger:#ff938a;--d-success:#7ad6a0;--d-warning:#e9bd70}}
-:root{--canvas:var(--xsec-window-background,var(--d-canvas));--surface:var(--xsec-content-surface,var(--d-surface));--subtle:var(--xsec-bg-subtle,var(--d-subtle));--hover:var(--xsec-bg-hover,var(--d-hover));--text:var(--xsec-text-primary,var(--d-text));--muted:var(--xsec-text-secondary,var(--d-muted));--border:var(--xsec-border-default,var(--d-border));--primary:var(--xsec-text-accent,var(--d-text));--danger:var(--xsec-status-error,var(--d-danger));--success:var(--xsec-status-success,var(--d-success));--warning:var(--xsec-status-warning,var(--d-warning));--info:color-mix(in srgb,#0169cc 68%,var(--text));--hairline:color-mix(in srgb,var(--text) 10%,transparent);--r-control:var(--xsec-radius-md,8px);--r-panel:var(--xsec-radius-lg,12px);--font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei","Noto Sans CJK SC",system-ui,sans-serif;--mono:ui-monospace,"SF Mono","Cascadia Mono",Consolas,"Liberation Mono",monospace}
+:root{--canvas:var(--xsec-window-background,var(--d-canvas));--surface:var(--xsec-content-surface,var(--d-surface));--subtle:var(--xsec-bg-subtle,var(--d-subtle));--hover:var(--xsec-bg-hover,var(--d-hover));--text:var(--xsec-text-primary,var(--d-text));--muted:var(--xsec-text-secondary,var(--d-muted));--border:var(--xsec-border-default,var(--d-border));--primary:var(--xsec-text-accent,#0169cc);--danger:var(--xsec-status-error,var(--d-danger));--success:var(--xsec-status-success,var(--d-success));--warning:var(--xsec-status-warning,var(--d-warning));--info:color-mix(in srgb,#0169cc 68%,var(--text));--hairline:color-mix(in srgb,var(--text) 10%,transparent);--r-control:var(--xsec-radius-md,8px);--r-panel:var(--xsec-radius-lg,12px);--font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei","Noto Sans CJK SC",system-ui,sans-serif;--mono:ui-monospace,"SF Mono","Cascadia Mono",Consolas,"Liberation Mono",monospace}
 *,*::before,*::after{box-sizing:border-box}
 html,body,[data-xsec-plugin-root]{width:100%;height:100%;margin:0}
 body{overflow:hidden;background:var(--surface);color:var(--text);font:14px/1.45 var(--font);-webkit-font-smoothing:antialiased}
@@ -108,7 +108,8 @@ button,input,select{font:inherit;color:inherit}
 .x-btn.small{height:26px;padding:0 8px;font-size:12px}
 .x-btn.ghost{background:transparent}
 .x-btn.ghost:hover{background:var(--subtle)}
-.x-btn.primary{background:var(--primary);color:var(--surface)}
+.x-btn.primary{background:var(--primary);color:#fff}
+@supports (color:oklch(from red l c h)){.x-btn.primary{color:oklch(from var(--primary) clamp(0,(.65 - l)*1000,1) 0 0)}}
 .x-btn.primary:hover{background:color-mix(in srgb,var(--primary) 88%,var(--surface))}
 .x-icon{flex:none;width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
 .x-empty{display:grid;flex:1;place-content:center;justify-items:center;gap:4px;padding:32px 24px;text-align:center}
